@@ -1,12 +1,17 @@
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
-import uvicorn 
+from typing import List, Optional, Dict, Any
+import uvicorn
 import shutil
 import os
 import json
 from google.api_core import exceptions
+
+# Import updated classes
+from pipeline.ocr_model import ExpenseExtractor
 from pipeline.financial_insights import FinancialInsightsAnalyzer
+from database.supabase_client import SupabaseClient
 
 # import your ExpenseExtractor class here
 from pipeline.ocr_model import ExpenseExtractor
@@ -16,6 +21,11 @@ app = FastAPI(title="Expense Extraction API", version="1.0")
 
 # Initialize the extractor once
 extractor = ExpenseExtractor()
+# Initialize components
+
+insights_analyzer = FinancialInsightsAnalyzer()
+db_client = SupabaseClient()
+
 
 class ExpenseItem(BaseModel):
     bill_no: Optional[str]  # <-- allow null
@@ -63,13 +73,10 @@ async def extract_expense(file: UploadFile = File(...)):
 
 
 
-# Initialize the financial insights analyzer
-insights_analyzer = FinancialInsightsAnalyzer()
 @app.get("/insights/{user_id}")
 async def get_user_insights(user_id: str, analysis_period: int = 30):
     """
-    Get comprehensive financial insights for a user.
-    Data is automatically fetched from database.
+    Get comprehensive financial insights for a user from Supabase data.
     """
     try:
         insights = insights_analyzer.analyze_comprehensive_insights(user_id, analysis_period)
@@ -85,7 +92,7 @@ async def get_user_insights(user_id: str, analysis_period: int = 30):
 @app.get("/budget/{user_id}")
 async def generate_user_budget(user_id: str, savings_target: float = 20.0):
     """
-    Generate smart budget plan for user based on historical data.
+    Generate smart budget plan for user based on Supabase data.
     """
     try:
         budget = insights_analyzer.generate_smart_budget(user_id, savings_target)
@@ -98,40 +105,60 @@ async def generate_user_budget(user_id: str, savings_target: float = 20.0):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating budget: {str(e)}")
 
-@app.get("/alerts/{user_id}")
-async def get_spending_alerts(user_id: str):
+@app.get("/expenses/{user_id}")
+async def get_user_expenses(user_id: str, days: int = 30):
     """
-    Get spending anomalies and alerts for user.
+    Get user's expenses from Supabase.
     """
     try:
-        alerts = insights_analyzer.detect_spending_anomalies(user_id)
+        expenses = db_client.fetch_user_expenses(user_id, days)
+        summary = db_client.get_expense_summary(user_id, days)
         
-        if "error" in alerts:
-            raise HTTPException(status_code=404, detail=alerts["error"])
+        return {
+            "expenses": expenses,
+            "summary": summary,
+            "user_id": user_id,
+            "period_days": days
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching expenses: {str(e)}")
+
+@app.get("/profile/{user_id}")
+async def get_user_profile(user_id: str):
+    """
+    Get user's profile from Supabase.
+    """
+    try:
+        profile = db_client.fetch_user_profile(user_id)
+        
+        if not profile:
+            raise HTTPException(status_code=404, detail="User profile not found")
             
-        return alerts
+        return profile
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error detecting anomalies: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching profile: {str(e)}")
 
-@app.get("/report/{user_id}")
-async def get_financial_report(user_id: str, report_type: str = "monthly"):
+@app.put("/profile/{user_id}")
+async def update_user_profile(user_id: str, profile_data: Dict[str, Any]):
     """
-    Generate comprehensive financial report for user.
+    Update user's profile in Supabase.
     """
-    if report_type not in ["weekly", "monthly", "quarterly"]:
-        raise HTTPException(status_code=400, detail="Invalid report type")
-        
     try:
-        report = insights_analyzer.generate_financial_report(user_id, report_type)
-        return report
+        result = db_client.upsert_user_profile(user_id, profile_data)
         
+        if not result.get("success", False):
+            raise HTTPException(status_code=500, detail=f"Failed to update profile: {result.get('error', 'Unknown error')}")
+            
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating report: {str(e)}")
-
-
-
-
+        raise HTTPException(status_code=500, detail=f"Error updating profile: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
