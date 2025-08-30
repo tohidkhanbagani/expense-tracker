@@ -1,10 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
-from typing import List
-import uvicorn
+from typing import List, Optional
+import uvicorn 
 import shutil
 import os
 import json
+from google.api_core import exceptions
 
 # import your ExpenseExtractor class here
 from pipeline.ocr_model import ExpenseExtractor
@@ -15,16 +16,15 @@ app = FastAPI(title="Expense Extraction API", version="1.0")
 # Initialize the extractor once
 extractor = ExpenseExtractor()
 
-class Item(BaseModel):
-    bill_no: str
+class ExpenseItem(BaseModel):
+    bill_no: Optional[str]  # <-- allow null
     expence_name: str
     amount: float
     category: str
     mode: str
 
 class ExtractionResponse(BaseModel):
-    extracted_data: List[Item]
-
+    extracted_data: List[ExpenseItem]
 
 @app.post("/extract", response_model=ExtractionResponse)
 async def extract_expense(file: UploadFile = File(...)):
@@ -40,6 +40,8 @@ async def extract_expense(file: UploadFile = File(...)):
         # Run extraction
         try:
             extracted = extractor.extract_expense(temp_file)
+        except exceptions.InvalidArgument as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image provided: {e}")
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="The provided image does not appear to be a bill or receipt.")
         except Exception as e:
